@@ -203,15 +203,6 @@
         let currentWeeksAgo = 1;
         let currentName = '';
 
-        function getWeekStart(weeksAgo) {
-            const today = new Date();
-            const dayOfWeek = today.getDay();
-            const diff = today.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1); // Adjust for Sunday
-            const monday = new Date(today.setDate(diff));
-            monday.setDate(monday.getDate() + ((1 - weeksAgo) * 7)); // Adjusted to make 0=next week, 1=this week
-            return monday;
-        }
-
         function formatWeekDisplay(weeksAgo) {
             if (weeksAgo === 0) return "Next week";
             if (weeksAgo === 1) return "This week";
@@ -221,33 +212,13 @@
 
         function updateWeekDisplay() {
             document.getElementById('weekDisplay').textContent = formatWeekDisplay(currentWeeksAgo);
-            document.getElementById('weekSelector').value = currentWeeksAgo;
             document.getElementById('submitButton').style.display = 
                 (currentWeeksAgo <= 1) ? 'block' : 'none';
             document.querySelector('.checkmark').style.display = 'none';
-            
-            // Reset all cells to default state
-            days.forEach((day, index) => {
-                const availCell = document.querySelector(`.grid .cell:nth-child(${(index * 3) + 2})`);
-                const counterCell = document.querySelector(`.grid .counter-cell:nth-child(${(index * 3) + 3})`);
-                
-                if (availCell) {
-                    availCell.dataset.state = 0;
-                    availCell.textContent = states[0].text;
-                    availCell.style.backgroundColor = states[0].bg;
-                }
-                
-                if (counterCell) {
-                    const counterSpan = counterCell.querySelector('.counter');
-                    const minusBtn = counterCell.querySelector('button:first-child');
-                    if (counterSpan) {
-                        counterSpan.textContent = '0';
-                        minusBtn.style.visibility = 'hidden';
-                    }
-                }
-            });
-            
-            loadSignup();
+            localStorage.setItem('currentWeeksAgo', currentWeeksAgo);
+            if (currentName) {
+                loadSignup();
+            }
         }
 
         function changeWeek(direction) {
@@ -265,22 +236,39 @@
             localStorage.setItem('selectedName', select.value);
             otherInput.style.display = select.value === 'Other' ? 'block' : 'none';
             
+            clearSignup();
+            
             if (select.value === 'Other') {
                 otherInput.value = localStorage.getItem('otherNameValue') || '';
+                currentName = otherInput.value;
+            } else if (select.value === '') {
+                currentName = '';
+            } else {
+                currentName = select.value;
             }
-            currentName = select.value === 'Other' ? otherInput.value : select.value;
-            loadSignup();
+            
+            if (currentName) {
+                loadSignup();
+            }
         }
 
         function handleOtherNameChange() {
             const otherInput = document.getElementById('otherName');
             localStorage.setItem('otherNameValue', otherInput.value);
+            
+            clearSignup();
+            
             currentName = otherInput.value;
-            loadSignup();
+            if (currentName) {
+                loadSignup();
+            }
         }
 
         function loadSignup() {
-            if (!currentName) return;
+            if (!currentName) {
+                clearSignup();
+                return;
+            }
 
             fetch(`/signup/${currentName}/${currentWeeksAgo}`, {
                 headers: {
@@ -289,11 +277,16 @@
             })
             .then(response => response.json())
             .then(signup => {
-                if (!signup || !signup.days) return;
+                if (!signup || !signup.days) {
+                    clearSignup();
+                    return;
+                }
                 
+                // Update each day's cells
                 signup.days.forEach((day, index) => {
-                    const availCell = document.querySelector(`.grid .cell:nth-child(${(index * 3) + 2})`);
-                    const counterCell = document.querySelector(`.grid .counter-cell:nth-child(${(index * 3) + 3})`);
+                    const dayName = days[index];
+                    const availCell = document.querySelector(`.grid .cell[data-day="${dayName}"]`);
+                    const counterCell = document.querySelector(`.grid .counter-cell[data-day="${dayName}"]`);
                     
                     if (availCell) {
                         const stateIndex = states.findIndex(s => s.value === day.availability);
@@ -314,6 +307,7 @@
             })
             .catch(error => {
                 console.error('Error:', error);
+                clearSignup();
             });
         }
 
@@ -326,30 +320,19 @@
                 name = otherInput.value;
             }
 
-            const weekStart = getWeekStart(currentWeeksAgo);
             const scheduleData = {
                 person: {
                     name: name
                 },
                 weeks_ago: currentWeeksAgo,
-                days: days.map((day, index) => {
-                    const date = new Date(weekStart);
-                    date.setDate(date.getDate() + index);
-                    const availCell = document.querySelector(`.grid .cell:nth-child(${(index * 3) + 2})`);
-                    const guestCell = document.querySelector(`.grid .counter-cell:nth-child(${(index * 3) + 3}) .counter`);
-                    
-                    if (!availCell || !guestCell) {
-                        return {
-                            date: date.toISOString().split('T')[0],
-                            availability: states[0].value,
-                            guests: 0
-                        };
-                    }
+                days: days.map(dayName => {
+                    const availCell = document.querySelector(`.grid .cell[data-day="${dayName}"]`);
+                    const counterCell = document.querySelector(`.grid .counter-cell[data-day="${dayName}"] .counter`);
                     
                     return {
-                        date: date.toISOString().split('T')[0],
+                        day: dayName,
                         availability: states[parseInt(availCell.dataset.state) || 0].value,
-                        guests: parseInt(guestCell.textContent) || 0
+                        guests: parseInt(counterCell.textContent) || 0
                     };
                 })
             };
@@ -369,8 +352,7 @@
                     return text ? JSON.parse(text) : {}
                 });
             })
-            .then(data => {
-                console.log('Success:', data);
+            .then(() => {
                 document.querySelector('.checkmark').style.display = 'inline';
             })
             .catch(error => {
@@ -378,16 +360,44 @@
             });
         }
 
+        function clearSignup() {
+            // Clear each day's cells
+            days.forEach(dayName => {
+                const availCell = document.querySelector(`.grid .cell[data-day="${dayName}"]`);
+                const counterCell = document.querySelector(`.grid .counter-cell[data-day="${dayName}"]`);
+                
+                if (availCell) {
+                    availCell.dataset.state = 0;
+                    availCell.textContent = states[0].text;
+                    availCell.style.backgroundColor = states[0].bg;
+                }
+                
+                if (counterCell) {
+                    const counterSpan = counterCell.querySelector('.counter');
+                    const minusBtn = counterCell.querySelector('button:first-child');
+                    if (counterSpan) {
+                        counterSpan.textContent = '0';
+                        minusBtn.style.visibility = 'hidden';
+                    }
+                }
+            });
+        }
+
         function createGrid() {
             const grid = document.querySelector('.grid');
-            days.forEach((day, index) => {
+            
+            // Create day rows
+            days.forEach(dayName => {
+                // Create day cell
                 const dayCell = document.createElement('div');
                 dayCell.className = 'cell';
-                dayCell.textContent = day;
+                dayCell.textContent = dayName;
                 grid.appendChild(dayCell);
 
+                // Create availability cell
                 const availCell = document.createElement('div');
                 availCell.className = 'cell';
+                availCell.dataset.day = dayName;  // Store the day name directly in the cell
                 availCell.onclick = function() {
                     const currentState = availCell.dataset.state || 0;
                     const nextState = (parseInt(currentState) + 1) % states.length;
@@ -400,8 +410,10 @@
                 availCell.style.backgroundColor = states[0].bg;
                 grid.appendChild(availCell);
 
+                // Create guest counter cell
                 const counterCell = document.createElement('div');
                 counterCell.className = 'counter-cell';
+                counterCell.dataset.day = dayName;  // Store the day name directly in the cell
                 const minusBtn = document.createElement('button');
                 minusBtn.textContent = '-';
                 minusBtn.style.visibility = 'hidden';
@@ -436,14 +448,21 @@
             // Get weeks ago from URL if present
             const pathParts = window.location.pathname.split('/');
             const nameIndex = pathParts.indexOf('signup') + 1;
-            const weeksAgoIndex = nameIndex + 1;
-            
-            if (weeksAgoIndex < pathParts.length) {
-                currentWeeksAgo = parseInt(pathParts[weeksAgoIndex]);
+            if (nameIndex === 0) { // If we're at root path '/'
+                // Load from localStorage or default to 1
+                currentWeeksAgo = parseInt(localStorage.getItem('currentWeeksAgo')) || 1;
+            } else {
+                const weeksAgoIndex = nameIndex + 1;
+                if (weeksAgoIndex < pathParts.length) {
+                    currentWeeksAgo = parseInt(pathParts[weeksAgoIndex]) || 1;
+                } else {
+                    // Load from localStorage or default to 1
+                    currentWeeksAgo = parseInt(localStorage.getItem('currentWeeksAgo')) || 1;
+                }
             }
             
             // Load name from URL or localStorage
-            if (nameIndex < pathParts.length) {
+            if (nameIndex > 0 && nameIndex < pathParts.length) {
                 const nameFromUrl = pathParts[nameIndex];
                 currentName = nameFromUrl;
                 const select = document.getElementById('nameSelect');

@@ -1,220 +1,233 @@
 from flask import Flask, render_template, request, redirect, url_for
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+from pymongo import MongoClient
+from pulp import *
+import os
 
 app = Flask(__name__)
 
-# In-memory storage
-signups = {} # week_key -> dict of name -> signup
-schedules = {} # week_key -> schedule
+# MongoDB setup
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
+client = MongoClient(MONGO_URI)
+db = client.meal_planner
+signups_collection = db.signups
+schedules_collection = db.schedules
 
+# Constants
+DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+def get_current_utc():
+    """Get current time in UTC."""
+    return datetime.now(timezone.utc)
+
+def get_week_start(weeks_ago):
+    """
+    Get the UTC datetime for Monday 00:00:00 of the target week.
+    Args:
+        weeks_ago: int where 0=next week, 1=this week, 2=last week
+    Returns:
+        datetime: The UTC datetime for Monday 00:00:00 of the target week
+    """
+    current_utc = get_current_utc()
+    days_since_monday = current_utc.weekday()  # Monday=0, Sunday=6
+    this_monday = current_utc - timedelta(days=days_since_monday)
+    this_monday = this_monday.replace(hour=0, minute=0, second=0, microsecond=0)
+    return this_monday + timedelta(weeks=(1 - weeks_ago))
+
+def date_to_str(dt):
+    """Convert datetime to YYYY-MM-DD string."""
+    return dt.strftime("%Y-%m-%d")
+
+@app.route('/')
 @app.route('/signup')
 @app.route('/signup/<name>')
 @app.route('/signup/<name>/<int:weeks_ago>')
-def signup(name=None, weeks_ago=0):
+def signup(name=None, weeks_ago=1):
     if request.headers.get('Accept') == 'application/json':
-        signup_data = None
-        if weeks_ago in signups and name in signups[weeks_ago]:
-            signup_data = signups[weeks_ago][name]
-        return signup_data or {"days": []}, 200
+        week_start = date_to_str(get_week_start(weeks_ago))
+        signup_data = signups_collection.find_one(
+            {"week_start": week_start, "person.name": name},
+            {"_id": 0}
+        )
+        
+        if signup_data:
+            return signup_data, 200
+            
+        # Create empty signup
+        empty_signup = {
+            "week_start": week_start,
+            "person": {"name": name} if name else None,
+            "days": [
+                {"day": day, "availability": "Wants to Eat", "guests": 0}
+                for day in DAYS
+            ]
+        }
+        return empty_signup, 200
     return render_template('index.html')
 
 @app.route('/schedule')
 @app.route('/schedule/<int:weeks_ago>')
-def schedule(weeks_ago=0):
+def schedule(weeks_ago=1):
     if request.headers.get('Accept') == 'application/json':
-        return schedules.get(weeks_ago, {"days": []}), 200
+        week_start = date_to_str(get_week_start(weeks_ago))
+        schedule_data = schedules_collection.find_one(
+            {"week_start": week_start},
+            {"_id": 0}
+        )
+        if schedule_data:
+            return schedule_data, 200
+        return {
+            "week_start": week_start,
+            "days": [
+                {"day": day, "chef": None, "people": []}
+                for day in DAYS
+            ]
+        }, 200
     return render_template('schedule.html')
 
 @app.route('/submit_signup', methods=['POST'])
 def submit_signup():
     # Get form data
     data = request.get_json()
-    weeks_ago = data.get('weeks_ago', 0)
+    weeks_ago = data.get('weeks_ago', 1)
     person_name = data['person']['name']
     
-    # Initialize week if needed
-    if weeks_ago not in signups:
-        signups[weeks_ago] = {}
-        
-    # Add/update signup for this person
-    signups[weeks_ago][person_name] = data
+    # Calculate week_start from weeks_ago
+    week_start = date_to_str(get_week_start(weeks_ago))
+    data['week_start'] = week_start
     
-    # Recreate schedule for this week using all signups
-    schedule = create_schedule(list(signups[weeks_ago].values()), get_previous_schedules(weeks_ago))
-    schedules[weeks_ago] = schedule
+    # Update or insert signup
+    signups_collection.replace_one(
+        {"week_start": week_start, "person.name": person_name},
+        data,
+        upsert=True
+    )
+    
+    # Get all signups for this week
+    week_signups = list(signups_collection.find(
+        {"week_start": week_start},
+        {"_id": 0}
+    ))
+    
+    # Create schedule for this week
+    schedule = create_schedule(week_signups, get_previous_schedules(week_start))
+    
+    # Update or insert schedule
+    if schedule:
+        schedules_collection.update_one(
+            {"week_start": week_start},
+            {"$set": schedule},
+            upsert=True
+        )
     
     return {"message": "Signup submitted successfully!"}, 200
 
 def create_schedule(signups, previous_schedules):
-    """
-    Given signups for one week and previous schedules, create a schedule for the week.
-    Args:
-        signups: List of signups for one specific week
-        previous_schedules: List of schedules from previous weeks
-    """
-    # Initialize schedule
-    schedule = {"days": []}
+    if not signups:
+        return None
+        
+    week_start = signups[0]['week_start']
     
-    # Track cooking assignments for this week
-    chef_assignments = {}  # chef name -> number of times assigned this week
+    # Initialize schedule structure
+    schedule = {
+        "week_start": week_start,
+        "days": [{"day": day, "chef": None, "people": []} for day in DAYS]
+    }
     
-    # Calculate historical cooking counts from previous schedules
+    # Calculate historical cooking counts
     historical_chef_counts = {}
     for past_schedule in previous_schedules:
         for day in past_schedule["days"]:
             if day["chef"]:
                 historical_chef_counts[day["chef"]] = historical_chef_counts.get(day["chef"], 0) + 1
+
+    # Collect availability and eater information
+    day_to_chefs = {day: [] for day in DAYS}
+    day_to_eaters = {day: [] for day in DAYS}
+    all_chefs = set()
     
-    # Process each day
-    for day_index in range(7):
-        day_schedule = {
-            "date": None,
-            "chef": None,
-            "people": []
-        }
-        
-        # Get all signups for this day
-        available_chefs = []
-        eaters = []
-        
-        for signup in signups:
-            person_name = signup["person"]["name"]
-            day_data = signup["days"][day_index]
-            
-            # Set the date if not set yet
-            if not day_schedule["date"]:
-                day_schedule["date"] = day_data["date"]
-                
-            # Track who can cook
+    for signup in signups:
+        person_name = signup["person"]["name"]
+        for day_data in signup["days"]:
+            day_name = day_data["day"]
             if day_data["availability"] == "Available to Cook":
-                available_chefs.append({
-                    "name": person_name,
-                    "week_assignments": chef_assignments.get(person_name, 0),
-                    "historical_count": historical_chef_counts.get(person_name, 0)
-                })
-                # Chef also eats
-                eaters.append({
+                day_to_chefs[day_name].append(person_name)
+                all_chefs.add(person_name)
+                day_to_eaters[day_name].append({
                     "name": person_name,
                     "guests": day_data["guests"]
                 })
-                
-            # Track who wants to eat
             elif day_data["availability"] == "Wants to Eat":
-                eaters.append({
+                day_to_eaters[day_name].append({
                     "name": person_name,
                     "guests": day_data["guests"]
                 })
-        
-        # Assign chef if we have available chefs
-        if available_chefs:
-            # First sort by assignments this week, then by historical count
-            available_chefs.sort(key=lambda x: (x["week_assignments"], x["historical_count"]))
-            chosen_chef = available_chefs[0]["name"]
+
+    # Create the optimization problem
+    prob = LpProblem("Fair_Chef_Assignment", LpMinimize)
+
+    # Decision Variables
+    x = LpVariable.dicts("assignment",
+                        ((day, chef) for day in DAYS for chef in all_chefs),
+                        cat='Binary')
+
+    # Variable for maximum assignments per chef
+    max_assignments = LpVariable("max_assignments", 0, None, LpInteger)
+    
+    # Variable for minimum assignments per chef
+    min_assignments = LpVariable("min_assignments", 0, None, LpInteger)
+
+    # Objective: Minimize the maximum assignments while keeping spread small
+    historical_weight = 0.001
+    prob += (1000 * max_assignments + 
+            100 * (max_assignments - min_assignments) + 
+            historical_weight * lpSum(x[day, chef] * historical_chef_counts.get(chef, 0)
+                                   for day in DAYS for chef in all_chefs))
+
+    # Constraints
+    # 1. Each day must have exactly one chef if there are available chefs
+    for day in DAYS:
+        if day_to_chefs[day]:  # If there are available chefs for this day
+            prob += lpSum(x[day, chef] for chef in all_chefs) == 1
+
+    # 2. Chefs can only be assigned on days they're available
+    for day in DAYS:
+        for chef in all_chefs:
+            if chef not in day_to_chefs[day]:
+                prob += x[day, chef] == 0
+
+    # 3. Track maximum and minimum assignments per chef
+    for chef in all_chefs:
+        chef_assignments = lpSum(x[day, chef] for day in DAYS)
+        prob += max_assignments >= chef_assignments
+        prob += min_assignments <= chef_assignments
+
+    # Solve the problem
+    prob.solve()
+
+    if LpStatus[prob.status] == 'Optimal':
+        # Extract the solution
+        for day_schedule in schedule["days"]:
+            day = day_schedule["day"]
+            # Find assigned chef for this day
+            assigned_chef = None
+            for chef in all_chefs:
+                if abs(value(x[day, chef]) - 1.0) < 1e-7:  # Compare with small tolerance
+                    assigned_chef = chef
+                    break
             
-            # Update assignments count for this week
-            chef_assignments[chosen_chef] = chef_assignments.get(chosen_chef, 0) + 1
-            
-            day_schedule["chef"] = chosen_chef
-        
-        day_schedule["people"] = eaters
-        schedule["days"].append(day_schedule)
+            day_schedule["chef"] = assigned_chef
+            day_schedule["people"] = day_to_eaters[day]
     
     return schedule
 
-def get_previous_schedules(weeks_ago=0):
-    # Return schedules from previous weeks
-    return [schedules[week] for week in schedules if week > weeks_ago]
-
-def get_signups_for_week(weeks_ago=0):
-    # Mock data for testing
-    mock_signups = {
-        "Andrew": {
-            "person": {
-                "name": "Andrew"
-            },
-            "days": [
-                {
-                    "date": "2024-01-22",
-                    "availability": "Available to Cook", 
-                    "guests": 2
-                },
-                {
-                    "date": "2024-01-23",
-                    "availability": "Wants to Eat",
-                    "guests": 0
-                },
-                {
-                    "date": "2024-01-24", 
-                    "availability": "Unavailable",
-                    "guests": 0
-                },
-                {
-                    "date": "2024-01-25",
-                    "availability": "Available to Cook",
-                    "guests": 3
-                },
-                {
-                    "date": "2024-01-26",
-                    "availability": "Wants to Eat",
-                    "guests": 1
-                },
-                {
-                    "date": "2024-01-27",
-                    "availability": "Unavailable",
-                    "guests": 0
-                },
-                {
-                    "date": "2024-01-28",
-                    "availability": "Wants to Eat",
-                    "guests": 0
-                }
-            ]
-        },
-        "Maddy": {
-            "person": {
-                "name": "Maddy"  
-            },
-            "days": [
-                {
-                    "date": "2024-01-22",
-                    "availability": "Wants to Eat",
-                    "guests": 0
-                },
-                {
-                    "date": "2024-01-23", 
-                    "availability": "Available to Cook",
-                    "guests": 4
-                },
-                {
-                    "date": "2024-01-24",
-                    "availability": "Wants to Eat",
-                    "guests": 1
-                },
-                {
-                    "date": "2024-01-25",
-                    "availability": "Unavailable",
-                    "guests": 0
-                },
-                {
-                    "date": "2024-01-26",
-                    "availability": "Available to Cook",
-                    "guests": 2
-                },
-                {
-                    "date": "2024-01-27",
-                    "availability": "Wants to Eat",
-                    "guests": 0
-                },
-                {
-                    "date": "2024-01-28",
-                    "availability": "Unavailable",
-                    "guests": 0
-                }
-            ]
-        }
-    }
-    
-    return signups.get(weeks_ago, mock_signups)
+def get_previous_schedules(week_start):
+    """Return schedules from weeks before the given week_start date."""
+    return list(schedules_collection.find(
+        {"week_start": {"$lt": week_start}},
+        {"_id": 0}
+    ))
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    port = int(os.getenv('PORT', 8080))
+    app.run(host='0.0.0.0', port=port, debug=os.getenv('FLASK_ENV') != 'production')

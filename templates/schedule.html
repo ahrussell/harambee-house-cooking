@@ -134,6 +134,7 @@
 
         function updateWeekDisplay() {
             document.getElementById('weekDisplay').textContent = formatWeekDisplay(currentWeeksAgo);
+            localStorage.setItem('currentWeeksAgo', currentWeeksAgo);
             loadSchedule();
         }
 
@@ -185,27 +186,32 @@
                     return;
                 }
 
-                console.log(schedule);
                 const grid = document.querySelector('.grid');
                 // Clear existing day cells
                 const cells = grid.querySelectorAll('.cell');
                 cells.forEach(cell => cell.remove());
 
+                // Create a map of day data for easy lookup
+                const dayMap = {};
                 schedule.days.forEach(day => {
-                    console.log(day);
+                    dayMap[day.day] = day;
+                });
+
+                // Create rows in the correct order using the days array
+                days.forEach(dayName => {
+                    const dayData = dayMap[dayName] || { chef: null, people: [] };
+
                     // Day cell
                     const dayCell = document.createElement('div');
                     dayCell.className = 'cell';
-                    const date = new Date(day.date);
-                    const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
                     dayCell.textContent = dayName;
                     grid.appendChild(dayCell);
 
                     // Chef cell
                     const chefCell = document.createElement('div');
                     chefCell.className = 'cell chef-cell';
-                    if (day.chef) {
-                        chefCell.textContent = day.chef;
+                    if (dayData.chef) {
+                        chefCell.textContent = dayData.chef;
                     } else {
                         chefCell.textContent = 'No Chef';
                         chefCell.classList.add('no-chef');
@@ -215,7 +221,7 @@
                     // People cell
                     const peopleCell = document.createElement('div');
                     peopleCell.className = 'cell people-cell';
-                    const peopleText = day.people.map(person => {
+                    const peopleText = dayData.people.map(person => {
                         if (person.guests > 0) {
                             return `${person.name} (+${person.guests})`;
                         }
@@ -238,7 +244,10 @@
             const weeksAgoIndex = pathParts.indexOf('schedule') + 1;
             
             if (weeksAgoIndex < pathParts.length) {
-                currentWeeksAgo = parseInt(pathParts[weeksAgoIndex]);
+                currentWeeksAgo = parseInt(pathParts[weeksAgoIndex]) || 1;
+            } else {
+                // Load from localStorage or default to 1
+                currentWeeksAgo = parseInt(localStorage.getItem('currentWeeksAgo')) || 1;
             }
             displayEmptySchedule(); // Show empty schedule first
             updateWeekDisplay(); // Then try to load data
