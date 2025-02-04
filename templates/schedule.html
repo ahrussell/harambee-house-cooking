@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weekly Schedule</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .tabs {
+            display: flex;
+            gap: 4px;
+            margin-bottom: 20px;
+            background: white;
+            padding: 4px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            justify-content: center;
+        }
+        .tab {
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            text-decoration: none;
+            color: #666;
+            font-weight: 500;
+        }
+        .tab:hover {
+            background: #f0f0f0;
+        }
+        .tab.active {
+            background: #007bff;
+            color: white;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: 0.7fr 0.8fr 1.5fr;
+            gap: 10px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .header {
+            font-weight: 600;
+            padding: 8px;
+            background: #f8f9fa;
+            border-radius: 4px;
+        }
+        .cell {
+            padding: 6px;
+            border-radius: 4px;
+            min-height: 30px;
+            display: flex;
+            align-items: center;
+        }
+        .chef-cell {
+            justify-content: center;
+        }
+        .no-chef {
+            background: #ffcccb;
+        }
+        .people-cell {
+            flex-direction: row;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .date-selector {
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        .week-nav {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .week-display {
+            min-width: 150px;
+            text-align: center;
+            font-weight: 500;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="tabs">
+        <a href="/signup" class="tab">Sign Up</a>
+        <a href="/schedule" class="tab active">Schedule</a>
+    </div>
+
+    <div class="date-selector">
+        <div class="week-nav">
+            <button type="button" onclick="changeWeek(-1)">&lt;</button>
+            <div id="weekDisplay" class="week-display">This week</div>
+            <button type="button" onclick="changeWeek(1)">&gt;</button>
+        </div>
+    </div>
+
+    <div class="grid">
+        <div class="header">Day</div>
+        <div class="header">Chef</div>
+        <div class="header">People</div>
+    </div>
+
+    <script>
+        let currentWeeksAgo = 1;
+        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+
+        function formatWeekDisplay(weeksAgo) {
+            if (weeksAgo === 0) return "Next week";
+            if (weeksAgo === 1) return "This week";
+            if (weeksAgo === 2) return "Last week";
+            return `${weeksAgo - 1} weeks ago`;
+        }
+
+        function updateWeekDisplay() {
+            document.getElementById('weekDisplay').textContent = formatWeekDisplay(currentWeeksAgo);
+            loadSchedule();
+        }
+
+        function changeWeek(direction) {
+            const newWeeksAgo = currentWeeksAgo - direction;
+            if (newWeeksAgo >= 0 && newWeeksAgo <= 10) {
+                currentWeeksAgo = newWeeksAgo;
+                updateWeekDisplay();
+            }
+        }
+
+        function displayEmptySchedule() {
+            const grid = document.querySelector('.grid');
+            // Clear existing day cells
+            const cells = grid.querySelectorAll('.cell');
+            cells.forEach(cell => cell.remove());
+
+            days.forEach(dayName => {
+                // Day cell
+                const dayCell = document.createElement('div');
+                dayCell.className = 'cell';
+                dayCell.textContent = dayName;
+                grid.appendChild(dayCell);
+
+                // Chef cell
+                const chefCell = document.createElement('div');
+                chefCell.className = 'cell chef-cell';
+                chefCell.textContent = 'No Chef';
+                chefCell.classList.add('no-chef');
+                grid.appendChild(chefCell);
+
+                // People cell
+                const peopleCell = document.createElement('div');
+                peopleCell.className = 'cell people-cell';
+                grid.appendChild(peopleCell);
+            });
+        }
+
+        function loadSchedule() {
+            fetch(`/schedule/${currentWeeksAgo}`, {
+                headers: {
+                    'Accept': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(schedule => {
+                if (!schedule || !schedule.days || schedule.days.length === 0) {
+                    displayEmptySchedule();
+                    return;
+                }
+
+                console.log(schedule);
+                const grid = document.querySelector('.grid');
+                // Clear existing day cells
+                const cells = grid.querySelectorAll('.cell');
+                cells.forEach(cell => cell.remove());
+
+                schedule.days.forEach(day => {
+                    console.log(day);
+                    // Day cell
+                    const dayCell = document.createElement('div');
+                    dayCell.className = 'cell';
+                    const date = new Date(day.date);
+                    const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
+                    dayCell.textContent = dayName;
+                    grid.appendChild(dayCell);
+
+                    // Chef cell
+                    const chefCell = document.createElement('div');
+                    chefCell.className = 'cell chef-cell';
+                    if (day.chef) {
+                        chefCell.textContent = day.chef;
+                    } else {
+                        chefCell.textContent = 'No Chef';
+                        chefCell.classList.add('no-chef');
+                    }
+                    grid.appendChild(chefCell);
+
+                    // People cell
+                    const peopleCell = document.createElement('div');
+                    peopleCell.className = 'cell people-cell';
+                    const peopleText = day.people.map(person => {
+                        if (person.guests > 0) {
+                            return `${person.name} (+${person.guests})`;
+                        }
+                        return person.name;
+                    }).join(', ');
+                    peopleCell.textContent = peopleText;
+                    grid.appendChild(peopleCell);
+                });
+            })
+            .catch(error => {
+                console.error('Error:', error);
+                displayEmptySchedule();
+            });
+        }
+
+        // Initial load
+        window.onload = function() {
+            // Get weeks ago from URL if present
+            const pathParts = window.location.pathname.split('/');
+            const weeksAgoIndex = pathParts.indexOf('schedule') + 1;
+            
+            if (weeksAgoIndex < pathParts.length) {
+                currentWeeksAgo = parseInt(pathParts[weeksAgoIndex]);
+            }
+            displayEmptySchedule(); // Show empty schedule first
+            updateWeekDisplay(); // Then try to load data
+        };
+    </script>
+</body>
+</html>
