@@ -11,6 +11,8 @@ primary_region = 'ams'
 
 [env]
   PORT = '8080'
+  FLASK_APP = "app.py"
+  FLASK_ENV = "production"
 
 [http_service]
   internal_port = 8080

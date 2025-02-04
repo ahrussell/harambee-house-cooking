@@ -1,17 +1,41 @@
 from flask import Flask, render_template, request, redirect, url_for
 from datetime import datetime, timedelta, timezone
-from pymongo import MongoClient
+import psycopg2
+from psycopg2.extras import Json, DictCursor
 from pulp import *
 import os
 
 app = Flask(__name__)
 
-# MongoDB setup
-MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/')
-client = MongoClient(MONGO_URI)
-db = client.meal_planner
-signups_collection = db.signups
-schedules_collection = db.schedules
+# PostgreSQL setup
+DATABASE_URL = os.getenv('DATABASE_URL')
+
+def get_db():
+    """Get database connection"""
+    return psycopg2.connect(DATABASE_URL, cursor_factory=DictCursor)
+
+# Initialize database tables
+def init_db():
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Create tables if they don't exist
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS signups (
+                    week_start TEXT,
+                    person_name TEXT,
+                    data JSONB,
+                    PRIMARY KEY (week_start, person_name)
+                );
+                
+                CREATE TABLE IF NOT EXISTS schedules (
+                    week_start TEXT PRIMARY KEY,
+                    data JSONB
+                );
+            """)
+        conn.commit()
+
+# Call init_db() when the application starts
+init_db()
 
 # Constants
 DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -38,87 +62,109 @@ def date_to_str(dt):
     """Convert datetime to YYYY-MM-DD string."""
     return dt.strftime("%Y-%m-%d")
 
-@app.route('/')
-@app.route('/signup')
-@app.route('/signup/<name>')
-@app.route('/signup/<name>/<int:weeks_ago>')
+
+@app.route('/', methods=['GET'])
+@app.route('/signup', methods=['GET'])
+@app.route('/signup/<name>', methods=['GET'])
+@app.route('/signup/<name>/<int:weeks_ago>', methods=['GET'])
 def signup(name=None, weeks_ago=1):
     if request.headers.get('Accept') == 'application/json':
         week_start = date_to_str(get_week_start(weeks_ago))
-        signup_data = signups_collection.find_one(
-            {"week_start": week_start, "person.name": name},
-            {"_id": 0}
-        )
         
-        if signup_data:
-            return signup_data, 200
-            
-        # Create empty signup
-        empty_signup = {
-            "week_start": week_start,
-            "person": {"name": name} if name else None,
-            "days": [
-                {"day": day, "availability": "Wants to Eat", "guests": 0}
-                for day in DAYS
-            ]
-        }
-        return empty_signup, 200
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT data FROM signups WHERE week_start = %s AND person_name = %s",
+                    (week_start, name)
+                )
+                result = cur.fetchone()
+                
+                if result:
+                    return result[0], 200
+                
+                # Create empty signup
+                empty_signup = {
+                    "week_start": week_start,
+                    "person": {"name": name} if name else None,
+                    "days": [
+                        {"day": day, "availability": "Wants to Eat", "guests": 0}
+                        for day in DAYS
+                    ]
+                }
+                return empty_signup, 200
     return render_template('index.html')
 
-@app.route('/schedule')
-@app.route('/schedule/<int:weeks_ago>')
+@app.route('/schedule', methods=['GET'])
+@app.route('/schedule/<int:weeks_ago>', methods=['GET'])
 def schedule(weeks_ago=1):
     if request.headers.get('Accept') == 'application/json':
         week_start = date_to_str(get_week_start(weeks_ago))
-        schedule_data = schedules_collection.find_one(
-            {"week_start": week_start},
-            {"_id": 0}
-        )
-        if schedule_data:
-            return schedule_data, 200
-        return {
-            "week_start": week_start,
-            "days": [
-                {"day": day, "chef": None, "people": []}
-                for day in DAYS
-            ]
-        }, 200
+        
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT data FROM schedules WHERE week_start = %s",
+                    (week_start,)
+                )
+                result = cur.fetchone()
+                
+                if result:
+                    return result[0], 200
+                
+                return {
+                    "week_start": week_start,
+                    "days": [
+                        {"day": day, "chef": None, "people": []}
+                        for day in DAYS
+                    ]
+                }, 200
     return render_template('schedule.html')
 
 @app.route('/submit_signup', methods=['POST'])
 def submit_signup():
-    # Get form data
     data = request.get_json()
     weeks_ago = data.get('weeks_ago', 1)
     person_name = data['person']['name']
     
-    # Calculate week_start from weeks_ago
     week_start = date_to_str(get_week_start(weeks_ago))
     data['week_start'] = week_start
     
-    # Update or insert signup
-    signups_collection.replace_one(
-        {"week_start": week_start, "person.name": person_name},
-        data,
-        upsert=True
-    )
-    
-    # Get all signups for this week
-    week_signups = list(signups_collection.find(
-        {"week_start": week_start},
-        {"_id": 0}
-    ))
-    
-    # Create schedule for this week
-    schedule = create_schedule(week_signups, get_previous_schedules(week_start))
-    
-    # Update or insert schedule
-    if schedule:
-        schedules_collection.update_one(
-            {"week_start": week_start},
-            {"$set": schedule},
-            upsert=True
-        )
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Update or insert signup
+            cur.execute(
+                """
+                INSERT INTO signups (week_start, person_name, data)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (week_start, person_name) 
+                DO UPDATE SET data = %s
+                """,
+                (week_start, person_name, Json(data), Json(data))
+            )
+            
+            # Get all signups for this week
+            cur.execute(
+                "SELECT data FROM signups WHERE week_start = %s",
+                (week_start,)
+            )
+            week_signups = [row[0] for row in cur.fetchall()]
+            
+            # Create schedule for this week
+            schedule = create_schedule(week_signups, get_previous_schedules(week_start))
+            
+            # Update or insert schedule
+            if schedule:
+                cur.execute(
+                    """
+                    INSERT INTO schedules (week_start, data)
+                    VALUES (%s, %s)
+                    ON CONFLICT (week_start) 
+                    DO UPDATE SET data = %s
+                    """,
+                    (week_start, Json(schedule), Json(schedule))
+                )
+        
+        conn.commit()
     
     return {"message": "Signup submitted successfully!"}, 200
 
@@ -223,10 +269,13 @@ def create_schedule(signups, previous_schedules):
 
 def get_previous_schedules(week_start):
     """Return schedules from weeks before the given week_start date."""
-    return list(schedules_collection.find(
-        {"week_start": {"$lt": week_start}},
-        {"_id": 0}
-    ))
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT data FROM schedules WHERE week_start < %s",
+                (week_start,)
+            )
+            return [row[0] for row in cur.fetchall()]
 
 if __name__ == '__main__':
     port = int(os.getenv('PORT', 8080))
