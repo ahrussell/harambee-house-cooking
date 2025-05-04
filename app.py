@@ -180,12 +180,66 @@ def create_schedule(signups, previous_schedules):
         "days": [{"day": day, "chef": None, "people": []} for day in DAYS]
     }
     
-    # Calculate historical cooking counts
-    historical_chef_counts = {}
-    for past_schedule in previous_schedules:
-        for day in past_schedule["days"]:
-            if day["chef"]:
-                historical_chef_counts[day["chef"]] = historical_chef_counts.get(day["chef"], 0) + 1
+    # Calculate mooch scores for each person
+    # Mooch score M_P = (E_P(1) * 2^3 + E_P(2) * 2^2 + E_P(3)* 2 + E_P(4)) / (C_P(1) * 2^3 + C_P(2) * 2^2 + C_P(3)* 2 + C_P(4))
+    # where E_P(N) is eating score for week N and C_P(N) is cooking score for week N
+    # N=1 is last week, N=2 is two weeks ago, etc.
+    # Higher weights are given to more recent weeks using powers of 2
+    mooch_scores = {}
+    
+    for person_name in {signup["person"]["name"] for signup in signups}:
+        eating_score = 0
+        cooking_score = 0
+        
+        max_possible_eating_score = 0
+        # Calculate weighted eating and cooking scores across previous weeks
+        for i, past_schedule in enumerate(previous_schedules[:4]):  # Only consider up to 4 weeks
+            week_weight = 2 ** (3 - i)  # 8, 4, 2, 1 for weeks 1, 2, 3, 4 respectively
+            max_possible_eating_score += week_weight * 7
+            
+            # Count eating instances
+            week_eating_score = 0
+            week_cooking_score = 0
+            for day in past_schedule["days"]:
+                if person_name in [eater["name"] for eater in day.get("people", [])]:
+                    week_eating_score += 1
+                
+                # Count cooking instances
+                if day.get("chef") == person_name:
+                    # Calculate cooking score based on number of people cooked for
+                    eater_count = 0
+                    for eater in day.get("people", []):
+                        # Count the person
+                        eater_count += 1
+                        # Add their guests
+                        eater_count += eater.get("guests", 0)
+                    
+                    # This score is meant to reflect a relative measure of how much effort it is to feed a group of that size.
+                    day_cooking_score = 0
+                    if eater_count >= 7:
+                        day_cooking_score = 4
+                    elif eater_count >= 4:
+                        day_cooking_score = 3
+                    elif eater_count >= 2:
+                        day_cooking_score = 2
+                    
+                    week_cooking_score += day_cooking_score
+
+            cooking_score += week_cooking_score * week_weight
+            eating_score += week_eating_score * week_weight
+
+        # Calculate mooch score (eating/cooking ratio)
+        # If a person has never cooked and never eaten, they get a score of 1.
+        if cooking_score == 0 and eating_score == 0:
+            mooch_scores[person_name] = 1
+        # If a person has never cooked, they get a mooch score that is the max_eating_score * eating_score,
+        # which makes it so that people who have never cooked will always have a higher mooch score than people who have cooked,
+        # and if you have two people who have never cooked, the one with the higher eating score will have the higher mooch score.
+        # This means the highest mooch score possible is max_eating_score^2.
+        elif cooking_score == 0:
+            mooch_scores[person_name] = eating_score * max_possible_eating_score
+        else:
+            mooch_scores[person_name] = eating_score / cooking_score
 
     # Collect availability and eater information
     day_to_chefs = {day: [] for day in DAYS}
@@ -224,10 +278,10 @@ def create_schedule(signups, previous_schedules):
     min_assignments = LpVariable("min_assignments", 0, None, LpInteger)
 
     # Objective: Minimize the maximum assignments while keeping spread small
-    historical_weight = 0.001
+    mooch_score_weight = 0.1
     prob += (1000 * max_assignments + 
-            100 * (max_assignments - min_assignments) + 
-            historical_weight * lpSum(x[day, chef] * historical_chef_counts.get(chef, 0)
+            100 * (max_assignments - min_assignments) - 
+            mooch_score_weight * lpSum(x[day, chef] * mooch_scores.get(chef, 0)
                                    for day in DAYS for chef in all_chefs))
 
     # Constraints
