@@ -145,6 +145,27 @@
             color: #28a745;
             font-size: 24px;
         }
+        .day-cell {
+            font-size: 16px;  /* Default size */
+        }
+        
+        /* Media query for smaller screens */
+        @media (max-width: 480px) {
+            .day-cell {
+                font-size: 14px;
+            }
+            .day-cell .full-day {
+                display: none;
+            }
+            .day-cell .short-day {
+                display: inline;
+            }
+        }
+        
+        /* Hide short day names by default */
+        .short-day {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -168,10 +189,11 @@
                 <select id="nameSelect" name="name" onchange="handleNameChange()">
                     <option value="">Select your name</option>
                     <option value="Andrew">Andrew</option>
-                    <option value="Maddy">Maddy</option>
+                    <option value="Maryna">Maryna</option>
                     <option value="Asim">Asim</option>
                     <option value="Patrick">Patrick</option>
-                    <option value="Maudie">Maudie</option>
+                    <option value="Callie">Callie</option>
+                    <option value="Mae">Mae</option>
                     <option value="Marcel">Marcel</option>
                     <option value="Kayla">Kayla</option>
                     <option value="Other">Other</option>
@@ -388,10 +410,31 @@
             
             // Create day rows
             days.forEach(dayName => {
-                // Create day cell
+                // Create day cell with both full and short names
                 const dayCell = document.createElement('div');
-                dayCell.className = 'cell';
-                dayCell.textContent = dayName;
+                dayCell.className = 'cell day-cell';
+                
+                // Create spans for both versions of the day name
+                const fullDaySpan = document.createElement('span');
+                fullDaySpan.className = 'full-day';
+                fullDaySpan.textContent = dayName;
+                
+                const shortDaySpan = document.createElement('span');
+                shortDaySpan.className = 'short-day';
+                // Map full names to short names
+                const shortNames = {
+                    'Monday': 'Mon',
+                    'Tuesday': 'Tues',
+                    'Wednesday': 'Wed',
+                    'Thursday': 'Thur',
+                    'Friday': 'Fri',
+                    'Saturday': 'Sat',
+                    'Sunday': 'Sun'
+                };
+                shortDaySpan.textContent = shortNames[dayName];
+                
+                dayCell.appendChild(fullDaySpan);
+                dayCell.appendChild(shortDaySpan);
                 grid.appendChild(dayCell);
 
                 // Create availability cell
