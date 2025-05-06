@@ -168,23 +168,25 @@ def submit_signup():
     
     return {"message": "Signup submitted successfully!"}, 200
 
-def create_schedule(signups, previous_schedules):
-    if not signups:
-        return None
+def calculate_mooch_scores(signups, previous_schedules):
+    """
+    Calculate mooch scores for each person based on their eating and cooking history.
+    
+    The mooch score is calculated using the formula:
+    M_P = (E_P(1) * 2^3 + E_P(2) * 2^2 + E_P(3)* 2 + E_P(4)) / (C_P(1) * 2^3 + C_P(2) * 2^2 + C_P(3)* 2 + C_P(4))
+    where:
+    - E_P(N) is eating score for week N
+    - C_P(N) is cooking score for week N
+    - N=1 is last week, N=2 is two weeks ago, etc.
+    - Higher weights are given to more recent weeks using powers of 2
+    
+    Args:
+        signups: List of current week's signups
+        previous_schedules: List of previous weeks' schedules
         
-    week_start = signups[0]['week_start']
-    
-    # Initialize schedule structure
-    schedule = {
-        "week_start": week_start,
-        "days": [{"day": day, "chef": None, "people": []} for day in DAYS]
-    }
-    
-    # Calculate mooch scores for each person
-    # Mooch score M_P = (E_P(1) * 2^3 + E_P(2) * 2^2 + E_P(3)* 2 + E_P(4)) / (C_P(1) * 2^3 + C_P(2) * 2^2 + C_P(3)* 2 + C_P(4))
-    # where E_P(N) is eating score for week N and C_P(N) is cooking score for week N
-    # N=1 is last week, N=2 is two weeks ago, etc.
-    # Higher weights are given to more recent weeks using powers of 2
+    Returns:
+        dict: Mapping of person names to their mooch scores
+    """
     mooch_scores = {}
     
     for person_name in {signup["person"]["name"] for signup in signups}:
@@ -235,12 +237,30 @@ def create_schedule(signups, previous_schedules):
         # If a person has never cooked, they get a mooch score that is the max_eating_score * eating_score,
         # which makes it so that people who have never cooked will always have a higher mooch score than people who have cooked,
         # and if you have two people who have never cooked, the one with the higher eating score will have the higher mooch score.
-        # This means the highest mooch score possible is max_eating_score^2.
+        # This means the highest mooch score possible is max_possible_eating_score^2.
         elif cooking_score == 0:
             mooch_scores[person_name] = eating_score * max_possible_eating_score
         else:
             mooch_scores[person_name] = eating_score / cooking_score
+            
+    max_possible_mooch_score = max_possible_eating_score**2
+    return mooch_scores, max_possible_mooch_score
 
+def create_schedule(signups, previous_schedules):
+    if not signups:
+        return None
+        
+    week_start = signups[0]['week_start']
+    
+    # Initialize schedule structure
+    schedule = {
+        "week_start": week_start,
+        "days": [{"day": day, "chef": None, "people": []} for day in DAYS]
+    }
+    
+    # Calculate mooch scores for each person
+    mooch_scores, max_possible_mooch_score = calculate_mooch_scores(signups, previous_schedules)
+    
     # Collect availability and eater information
     day_to_chefs = {day: [] for day in DAYS}
     day_to_eaters = {day: [] for day in DAYS}
@@ -270,19 +290,23 @@ def create_schedule(signups, previous_schedules):
     x = LpVariable.dicts("assignment",
                         ((day, chef) for day in DAYS for chef in all_chefs),
                         cat='Binary')
+    y = LpVariable.dicts("more_than_once", all_chefs, cat='Binary')
+    z = LpVariable.dicts("assigned_at_least_once", all_chefs, cat='Binary')
 
-    # Variable for maximum assignments per chef
-    max_assignments = LpVariable("max_assignments", 0, None, LpInteger)
-    
-    # Variable for minimum assignments per chef
-    min_assignments = LpVariable("min_assignments", 0, None, LpInteger)
+    # Variable for total mooch score - we want the assignment that has the highest
+    # total mooch score because we want the people with the highest mooch scores to be assigned.
+    total_mooch_expr = lpSum(x[day, chef] * mooch_scores.get(chef, 0)
+                         for day in DAYS for chef in all_chefs)
 
-    # Objective: Minimize the maximum assignments while keeping spread small
-    mooch_score_weight = 0.1
-    prob += (1000 * max_assignments + 
-            100 * (max_assignments - min_assignments) - 
-            mooch_score_weight * lpSum(x[day, chef] * mooch_scores.get(chef, 0)
-                                   for day in DAYS for chef in all_chefs))
+    # Objective: minimize number of people assigned more than once, maximize those assigned at least once,
+    # and maximize total mooch score as a tiebreaker
+    # Scale weights relative to max_possible_mooch_score to ensure proper prioritization
+    assignment_weight = max_possible_mooch_score 
+    lambda_weight = 0.01 * max_possible_mooch_score  # weight for encouraging everyone to be assigned at least once
+    mooch_weight = 0.001 # small weight for mooch score tiebreaker
+    prob += (assignment_weight * lpSum(y[chef] for chef in all_chefs) - 
+             lambda_weight * lpSum(z[chef] for chef in all_chefs) -
+             mooch_weight * total_mooch_expr)  # negative because we want to maximize mooch score
 
     # Constraints
     # 1. Each day must have exactly one chef if there are available chefs
@@ -296,16 +320,24 @@ def create_schedule(signups, previous_schedules):
             if chef not in day_to_chefs[day]:
                 prob += x[day, chef] == 0
 
-    # 3. Track maximum and minimum assignments per chef
+    # Track if a person is assigned more than once
     for chef in all_chefs:
-        chef_assignments = lpSum(x[day, chef] for day in DAYS)
-        prob += max_assignments >= chef_assignments
-        prob += min_assignments <= chef_assignments
+        prob += lpSum(x[day, chef] for day in DAYS) <= 1 + (len(DAYS) - 1) * y[chef]
+
+    # Track if a person is assigned at least once
+    for chef in all_chefs:
+        prob += lpSum(x[day, chef] for day in DAYS) >= z[chef]
 
     # Solve the problem
     prob.solve()
 
     if LpStatus[prob.status] == 'Optimal':
+        schedule["schedule_objective_fn"] = {
+            "value": value(prob.objective),
+            "total_mooch_score": value(total_mooch_expr),
+            "people_assigned_more_than_once": sum(value(y[chef]) for chef in all_chefs),
+            "people_assigned_at_least_once": sum(value(z[chef]) for chef in all_chefs)
+        }
         # Extract the solution
         for day_schedule in schedule["days"]:
             day = day_schedule["day"]
