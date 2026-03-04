@@ -123,6 +123,15 @@ def schedule(weeks_ago=1):
 @app.route('/submit_signup', methods=['POST'])
 def submit_signup():
     data = request.get_json()
+    if not data:
+        return {"error": "Invalid request body"}, 400
+
+    person = data.get('person')
+    if not person or not isinstance(person.get('name'), str) or not person['name'].strip():
+        return {"error": "Name is required"}, 400
+
+    data['person']['name'] = data['person']['name'].strip()
+
     weeks_ago = data.get('weeks_ago', 1)
     person_name = data['person']['name']
     

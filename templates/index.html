@@ -145,6 +145,11 @@
             color: #28a745;
             font-size: 24px;
         }
+        .error-message {
+            color: #dc3545;
+            font-size: 14px;
+            display: none;
+        }
         .day-cell {
             font-size: 16px;  /* Default size */
         }
@@ -256,6 +261,7 @@
     <div class="submit-container">
         <button id="submitButton" type="button" onclick="handleSubmit()">Submit</button>
         <span class="checkmark">✓</span>
+        <span class="error-message" id="errorMessage"></span>
     </div>
 
     <div class="stats-section">
@@ -433,6 +439,11 @@
                 })
             };
 
+            const errorEl = document.getElementById('errorMessage');
+            const checkmark = document.querySelector('.checkmark');
+            errorEl.style.display = 'none';
+            checkmark.style.display = 'none';
+
             fetch('/submit_signup', {
                 method: 'POST',
                 headers: {
@@ -442,17 +453,20 @@
             })
             .then(response => {
                 if (!response.ok) {
-                    throw new Error('Network response was not ok');
+                    return response.json().then(data => {
+                        throw new Error(data.error || 'Submission failed');
+                    });
                 }
                 return response.text().then(text => {
                     return text ? JSON.parse(text) : {}
                 });
             })
             .then(() => {
-                document.querySelector('.checkmark').style.display = 'inline';
+                checkmark.style.display = 'inline';
             })
             .catch(error => {
-                console.error('Error:', error);
+                errorEl.textContent = error.message;
+                errorEl.style.display = 'inline';
             });
         }
 
