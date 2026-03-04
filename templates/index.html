@@ -149,6 +149,50 @@
             font-size: 16px;  /* Default size */
         }
         
+        /* Stats section styles */
+        .stats-section {
+            margin-top: 30px;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            display: none;
+        }
+        .stats-header {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 15px;
+            color: #333;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 15px;
+        }
+        .stat-card {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 24px;
+            font-weight: 600;
+            color: #007bff;
+            margin-bottom: 5px;
+        }
+        .stat-label {
+            font-size: 14px;
+            color: #666;
+        }
+        .stats-note {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #666;
+            text-align: center;
+            font-style: italic;
+        }
+        
         /* Media query for smaller screens */
         @media (max-width: 480px) {
             .day-cell {
@@ -189,13 +233,13 @@
                 <select id="nameSelect" name="name" onchange="handleNameChange()">
                     <option value="">Select your name</option>
                     <option value="Andrew">Andrew</option>
-                    <option value="Maryna">Maryna</option>
                     <option value="Asim">Asim</option>
                     <option value="Patrick">Patrick</option>
-                    <option value="Callie">Callie</option>
-                    <option value="Mae">Mae</option>
                     <option value="Marcel">Marcel</option>
                     <option value="Kayla">Kayla</option>
+                    <option value="Eva">Eva</option>
+                    <option value="Hanna">Hanna</option>
+                    <option value="Nora">Nora</option>
                     <option value="Other">Other</option>
                 </select>
                 <input type="text" id="otherName" name="otherName" placeholder="Enter your name" style="display: none;" onchange="handleOtherNameChange()">
@@ -212,6 +256,29 @@
     <div class="submit-container">
         <button id="submitButton" type="button" onclick="handleSubmit()">Submit</button>
         <span class="checkmark">✓</span>
+    </div>
+
+    <div class="stats-section">
+        <div class="stats-header">Your Stats (Past 4 Weeks)</div>
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-value" id="dinnersEaten">0</div>
+                <div class="stat-label">Dinners Eaten</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="dinnersCooked">0</div>
+                <div class="stat-label">Dinners Cooked</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="peopleCookedFor">0</div>
+                <div class="stat-label">People Cooked For</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-value" id="moochScore">0</div>
+                <div class="stat-label">Mooch Score</div>
+            </div>
+        </div>
+        <div class="stats-note">Higher mooch score = more eating than cooking</div>
     </div>
 
     <script>
@@ -240,6 +307,7 @@
             localStorage.setItem('currentWeeksAgo', currentWeeksAgo);
             if (currentName) {
                 loadSignup();
+                loadStats();
             }
         }
 
@@ -271,6 +339,9 @@
             
             if (currentName) {
                 loadSignup();
+                loadStats();
+            } else {
+                document.querySelector('.stats-section').style.display = 'none';
             }
         }
 
@@ -283,6 +354,9 @@
             currentName = otherInput.value;
             if (currentName) {
                 loadSignup();
+                loadStats();
+            } else {
+                document.querySelector('.stats-section').style.display = 'none';
             }
         }
 
@@ -483,6 +557,31 @@
                 counterCell.appendChild(counterSpan);
                 counterCell.appendChild(plusBtn);
                 grid.appendChild(counterCell);
+            });
+        }
+
+        function loadStats() {
+            if (!currentName) {
+                document.querySelector('.stats-section').style.display = 'none';
+                return;
+            }
+
+            fetch(`/stats/${currentName}`, {
+                headers: {
+                    'Accept': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(stats => {
+                document.getElementById('dinnersEaten').textContent = stats.dinners_eaten;
+                document.getElementById('dinnersCooked').textContent = stats.dinners_cooked;
+                document.getElementById('peopleCookedFor').textContent = stats.people_cooked_for;
+                document.getElementById('moochScore').textContent = stats.mooch_score.toFixed(1);
+                document.querySelector('.stats-section').style.display = 'block';
+            })
+            .catch(error => {
+                console.error('Error loading stats:', error);
+                document.querySelector('.stats-section').style.display = 'none';
             });
         }
 

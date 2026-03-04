@@ -168,82 +168,146 @@ def submit_signup():
     
     return {"message": "Signup submitted successfully!"}, 200
 
+@app.route('/stats/<name>', methods=['GET'])
+def get_stats(name):
+    if request.headers.get('Accept') != 'application/json':
+        return "Not found", 404
+        
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            # Get the last 4 weeks of schedules
+            cur.execute(
+                """
+                SELECT data FROM schedules 
+                WHERE week_start < %s 
+                ORDER BY week_start DESC 
+                LIMIT 4
+                """,
+                (date_to_str(get_week_start(1)),)
+            )
+            schedules = [row[0] for row in cur.fetchall()]
+            
+            # Initialize stats
+            stats = {
+                "dinners_eaten": 0,
+                "dinners_cooked": 0,
+                "people_cooked_for": 0,
+                "mooch_score": 0
+            }
+            
+            # Calculate raw counts from schedules
+            for schedule in schedules:
+                for day in schedule["days"]:
+                    # Count dinners eaten
+                    if any(person["name"] == name for person in day.get("people", [])):
+                        stats["dinners_eaten"] += 1
+                    
+                    # Count dinners cooked and people cooked for
+                    if day.get("chef") == name:
+                        stats["dinners_cooked"] += 1
+                        people_count = 0
+                        # Count total people cooked for (including guests)
+                        for person in day.get("people", []):
+                            people_count += 1 + person.get("guests", 0)
+                        stats["people_cooked_for"] += people_count
+            
+            # Calculate mooch score using shared functions
+            eating_score, cooking_score, max_possible_eating_score = calculate_eating_cooking_scores(schedules, name)
+            stats["mooch_score"] = calculate_mooch_score(eating_score, cooking_score, max_possible_eating_score)
+            
+            return stats, 200
+
+def calculate_eating_cooking_scores(schedules, person_name):
+    """
+    Calculate eating and cooking scores for a person based on their history.
+    
+    Args:
+        schedules: List of schedule data from previous weeks
+        person_name: Name of the person to calculate scores for
+        
+    Returns:
+        tuple: (eating_score, cooking_score, max_possible_eating_score)
+    """
+    eating_score = 0
+    cooking_score = 0
+    max_possible_eating_score = 0
+    
+    # Calculate weighted eating and cooking scores across previous weeks
+    for i, past_schedule in enumerate(schedules[:4]):  # Only consider up to 4 weeks
+        week_weight = 2 ** (3 - i)  # 8, 4, 2, 1 for weeks 1, 2, 3, 4 respectively
+        max_possible_eating_score += week_weight * 7
+        
+        # Count eating instances
+        week_eating_score = 0
+        week_cooking_score = 0
+        for day in past_schedule["days"]:
+            if person_name in [eater["name"] for eater in day.get("people", [])]:
+                week_eating_score += 1
+            
+            # Count cooking instances
+            if day.get("chef") == person_name:
+                # Calculate cooking score based on number of people cooked for
+                eater_count = 0
+                for eater in day.get("people", []):
+                    # Count the person
+                    eater_count += 1
+                    # Add their guests
+                    eater_count += eater.get("guests", 0)
+                
+                # This score is meant to reflect a relative measure of how much effort it is to feed a group of that size.
+                day_cooking_score = 0
+                if eater_count >= 7:
+                    day_cooking_score = 4
+                elif eater_count >= 4:
+                    day_cooking_score = 3
+                elif eater_count >= 2:
+                    day_cooking_score = 2
+                
+                week_cooking_score += day_cooking_score
+
+        cooking_score += week_cooking_score * week_weight
+        eating_score += week_eating_score * week_weight
+    
+    return eating_score, cooking_score, max_possible_eating_score
+
+def calculate_mooch_score(eating_score, cooking_score, max_possible_eating_score):
+    """
+    Calculate mooch score based on eating and cooking scores.
+    
+    Args:
+        eating_score: Weighted score of dinners eaten
+        cooking_score: Weighted score of dinners cooked
+        max_possible_eating_score: Maximum possible eating score
+        
+    Returns:
+        float: The calculated mooch score
+    """
+    if cooking_score == 0 and eating_score == 0:
+        return 1
+    elif cooking_score == 0:
+        return eating_score * max_possible_eating_score
+    else:
+        return eating_score / cooking_score
+
 def calculate_mooch_scores(signups, previous_schedules):
     """
     Calculate mooch scores for each person based on their eating and cooking history.
-    
-    The mooch score is calculated using the formula:
-    M_P = (E_P(1) * 2^3 + E_P(2) * 2^2 + E_P(3)* 2 + E_P(4)) / (C_P(1) * 2^3 + C_P(2) * 2^2 + C_P(3)* 2 + C_P(4))
-    where:
-    - E_P(N) is eating score for week N
-    - C_P(N) is cooking score for week N
-    - N=1 is last week, N=2 is two weeks ago, etc.
-    - Higher weights are given to more recent weeks using powers of 2
     
     Args:
         signups: List of current week's signups
         previous_schedules: List of previous weeks' schedules
         
     Returns:
-        dict: Mapping of person names to their mooch scores
+        tuple: (dict of person names to mooch scores, max_possible_mooch_score)
     """
     mooch_scores = {}
+    max_possible_mooch_score = 0
     
     for person_name in {signup["person"]["name"] for signup in signups}:
-        eating_score = 0
-        cooking_score = 0
-        
-        max_possible_eating_score = 0
-        # Calculate weighted eating and cooking scores across previous weeks
-        for i, past_schedule in enumerate(previous_schedules[:4]):  # Only consider up to 4 weeks
-            week_weight = 2 ** (3 - i)  # 8, 4, 2, 1 for weeks 1, 2, 3, 4 respectively
-            max_possible_eating_score += week_weight * 7
-            
-            # Count eating instances
-            week_eating_score = 0
-            week_cooking_score = 0
-            for day in past_schedule["days"]:
-                if person_name in [eater["name"] for eater in day.get("people", [])]:
-                    week_eating_score += 1
-                
-                # Count cooking instances
-                if day.get("chef") == person_name:
-                    # Calculate cooking score based on number of people cooked for
-                    eater_count = 0
-                    for eater in day.get("people", []):
-                        # Count the person
-                        eater_count += 1
-                        # Add their guests
-                        eater_count += eater.get("guests", 0)
-                    
-                    # This score is meant to reflect a relative measure of how much effort it is to feed a group of that size.
-                    day_cooking_score = 0
-                    if eater_count >= 7:
-                        day_cooking_score = 4
-                    elif eater_count >= 4:
-                        day_cooking_score = 3
-                    elif eater_count >= 2:
-                        day_cooking_score = 2
-                    
-                    week_cooking_score += day_cooking_score
-
-            cooking_score += week_cooking_score * week_weight
-            eating_score += week_eating_score * week_weight
-
-        # Calculate mooch score (eating/cooking ratio)
-        # If a person has never cooked and never eaten, they get a score of 1.
-        if cooking_score == 0 and eating_score == 0:
-            mooch_scores[person_name] = 1
-        # If a person has never cooked, they get a mooch score that is the max_eating_score * eating_score,
-        # which makes it so that people who have never cooked will always have a higher mooch score than people who have cooked,
-        # and if you have two people who have never cooked, the one with the higher eating score will have the higher mooch score.
-        # This means the highest mooch score possible is max_possible_eating_score^2.
-        elif cooking_score == 0:
-            mooch_scores[person_name] = eating_score * max_possible_eating_score
-        else:
-            mooch_scores[person_name] = eating_score / cooking_score
-            
-    max_possible_mooch_score = max_possible_eating_score**2
+        eating_score, cooking_score, max_possible_eating_score = calculate_eating_cooking_scores(previous_schedules, person_name)
+        mooch_scores[person_name] = calculate_mooch_score(eating_score, cooking_score, max_possible_eating_score)
+        max_possible_mooch_score = max(max_possible_mooch_score, max_possible_eating_score**2)
+    
     return mooch_scores, max_possible_mooch_score
 
 def create_schedule(signups, previous_schedules):
