@@ -307,17 +307,15 @@ def calculate_mooch_scores(signups, previous_schedules):
         previous_schedules: List of previous weeks' schedules
         
     Returns:
-        tuple: (dict of person names to mooch scores, max_possible_mooch_score)
+        dict: person names to mooch scores
     """
     mooch_scores = {}
-    max_possible_mooch_score = 0
     
     for person_name in {signup["person"]["name"] for signup in signups}:
         eating_score, cooking_score, max_possible_eating_score = calculate_eating_cooking_scores(previous_schedules, person_name)
         mooch_scores[person_name] = calculate_mooch_score(eating_score, cooking_score, max_possible_eating_score)
-        max_possible_mooch_score = max(max_possible_mooch_score, max_possible_eating_score**2)
     
-    return mooch_scores, max_possible_mooch_score
+    return mooch_scores
 
 def create_schedule(signups, previous_schedules):
     if not signups:
@@ -332,7 +330,7 @@ def create_schedule(signups, previous_schedules):
     }
     
     # Calculate mooch scores for each person
-    mooch_scores, max_possible_mooch_score = calculate_mooch_scores(signups, previous_schedules)
+    mooch_scores = calculate_mooch_scores(signups, previous_schedules)
     
     # Collect availability and eater information
     day_to_chefs = {day: [] for day in DAYS}
@@ -363,23 +361,23 @@ def create_schedule(signups, previous_schedules):
     x = LpVariable.dicts("assignment",
                         ((day, chef) for day in DAYS for chef in all_chefs),
                         cat='Binary')
-    y = LpVariable.dicts("more_than_once", all_chefs, cat='Binary')
-    z = LpVariable.dicts("assigned_at_least_once", all_chefs, cat='Binary')
+    # shift[chef, k] is 1 if the chef cooks at least k times this week
+    shift = LpVariable.dicts("shift",
+                            ((chef, k) for chef in all_chefs for k in range(1, len(DAYS) + 1)),
+                            cat='Binary')
 
-    # Variable for total mooch score - we want the assignment that has the highest
-    # total mooch score because we want the people with the highest mooch scores to be assigned.
-    total_mooch_expr = lpSum(x[day, chef] * mooch_scores.get(chef, 0)
-                         for day in DAYS for chef in all_chefs)
+    # Normalize mooch scores to [0, 1] so they can only ever break ties
+    max_mooch = max((mooch_scores.get(chef, 0) for chef in all_chefs), default=0) or 1
+    total_mooch_expr = lpSum(x[day, chef] * mooch_scores.get(chef, 0) / max_mooch
+                             for day in DAYS for chef in all_chefs)
 
-    # Objective: minimize number of people assigned more than once, maximize those assigned at least once,
-    # and maximize total mooch score as a tiebreaker
-    # Scale weights relative to max_possible_mooch_score to ensure proper prioritization
-    assignment_weight = max_possible_mooch_score 
-    lambda_weight = 0.01 * max_possible_mooch_score  # weight for encouraging everyone to be assigned at least once
-    mooch_weight = 0.001 # small weight for mooch score tiebreaker
-    prob += (assignment_weight * lpSum(y[chef] for chef in all_chefs) - 
-             lambda_weight * lpSum(z[chef] for chef in all_chefs) -
-             mooch_weight * total_mooch_expr)  # negative because we want to maximize mooch score
+    # Objective: the k-th shift for any chef costs k, so each extra shift for the same
+    # person is more expensive than giving it to someone with fewer shifts. This spreads
+    # the cooking as evenly as availability allows. Mooch score is a small tiebreaker
+    # (at most 7 * 0.01 < 1) that favors people with the highest mooch scores.
+    mooch_weight = 0.01
+    prob += (lpSum(k * shift[chef, k] for chef in all_chefs for k in range(1, len(DAYS) + 1)) -
+             mooch_weight * total_mooch_expr)
 
     # Constraints
     # 1. Each day must have exactly one chef if there are available chefs
@@ -393,13 +391,9 @@ def create_schedule(signups, previous_schedules):
             if chef not in day_to_chefs[day]:
                 prob += x[day, chef] == 0
 
-    # Track if a person is assigned more than once
+    # Each assignment uses up one of the chef's shifts
     for chef in all_chefs:
-        prob += lpSum(x[day, chef] for day in DAYS) <= 1 + (len(DAYS) - 1) * y[chef]
-
-    # Track if a person is assigned at least once
-    for chef in all_chefs:
-        prob += lpSum(x[day, chef] for day in DAYS) >= z[chef]
+        prob += lpSum(x[day, chef] for day in DAYS) == lpSum(shift[chef, k] for k in range(1, len(DAYS) + 1))
 
     # Solve the problem
     prob.solve()
@@ -407,9 +401,8 @@ def create_schedule(signups, previous_schedules):
     if LpStatus[prob.status] == 'Optimal':
         schedule["schedule_objective_fn"] = {
             "value": value(prob.objective),
-            "total_mooch_score": value(total_mooch_expr),
-            "people_assigned_more_than_once": sum(value(y[chef]) for chef in all_chefs),
-            "people_assigned_at_least_once": sum(value(z[chef]) for chef in all_chefs)
+            "total_normalized_mooch_score": value(total_mooch_expr),
+            "max_shifts_per_chef": max((sum(value(x[day, chef]) for day in DAYS) for chef in all_chefs), default=0)
         }
         # Extract the solution
         for day_schedule in schedule["days"]:
@@ -431,7 +424,7 @@ def get_previous_schedules(week_start):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT data FROM schedules WHERE week_start < %s",
+                "SELECT data FROM schedules WHERE week_start < %s ORDER BY week_start DESC LIMIT 4",
                 (week_start,)
             )
             return [row[0] for row in cur.fetchall()]
