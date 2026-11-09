@@ -237,14 +237,12 @@
             <div class="name-controls">
                 <select id="nameSelect" name="name" onchange="handleNameChange()">
                     <option value="">Select your name</option>
-                    <option value="Asim">Asim</option>
-                    <option value="Patrick">Patrick</option>
-                    <option value="Kayla">Kayla</option>
-                    <option value="Joel">Joel</option>
-                    <option value="Loic">Loic</option>
-                    <option value="Katie">Katie</option>
-                    <option value="Priyav">Priyav</option>
-                    <option value="Nanette">Nanette</option>
+                    {% for housemate in housemates %}
+                    <option value="{{ housemate }}">{{ housemate }}</option>
+                    {% endfor %}
+                    {% for person in people if person and person not in housemates %}
+                    <option value="{{ person }}">{{ person }}</option>
+                    {% endfor %}
                     <option value="Other">Other</option>
                 </select>
                 <input type="text" id="otherName" name="otherName" placeholder="Enter your name" style="display: none;" onchange="handleOtherNameChange()">
@@ -616,33 +614,43 @@
                     currentWeeksAgo = parseInt(localStorage.getItem('currentWeeksAgo')) || 1;
                 }
             }
-            
+
+            createGrid();
+
+            const select = document.getElementById('nameSelect');
+            const otherInput = document.getElementById('otherName');
+
             // Load name from URL or localStorage
             if (nameIndex > 0 && nameIndex < pathParts.length) {
-                const nameFromUrl = pathParts[nameIndex];
+                const nameFromUrl = decodeURIComponent(pathParts[nameIndex]);
                 currentName = nameFromUrl;
-                const select = document.getElementById('nameSelect');
                 if ([...select.options].some(opt => opt.value === nameFromUrl)) {
                     select.value = nameFromUrl;
                 } else {
                     select.value = 'Other';
-                    document.getElementById('otherName').style.display = 'block';
-                    document.getElementById('otherName').value = nameFromUrl;
+                    otherInput.style.display = 'block';
+                    otherInput.value = nameFromUrl;
                 }
             } else {
                 const savedName = localStorage.getItem('selectedName');
                 if (savedName) {
-                    currentName = savedName === 'Other' ? 
-                        localStorage.getItem('otherNameValue') : savedName;
-                    document.getElementById('nameSelect').value = savedName;
                     if (savedName === 'Other') {
-                        document.getElementById('otherName').style.display = 'block';
-                        document.getElementById('otherName').value = localStorage.getItem('otherNameValue') || '';
+                        currentName = localStorage.getItem('otherNameValue') || '';
+                        select.value = 'Other';
+                        otherInput.style.display = 'block';
+                        otherInput.value = currentName;
+                    } else if ([...select.options].some(opt => opt.value === savedName)) {
+                        currentName = savedName;
+                        select.value = savedName;
+                    } else {
+                        currentName = savedName;
+                        select.value = 'Other';
+                        otherInput.style.display = 'block';
+                        otherInput.value = savedName;
                     }
                 }
             }
-            
-            createGrid();
+
             updateWeekDisplay();
         };
     </script>

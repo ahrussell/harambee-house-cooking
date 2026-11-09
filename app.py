@@ -40,6 +40,8 @@ init_db()
 # Constants
 DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
 
+HOUSEMATES = ['Asim', 'Patrick', 'Kayla', 'Joel', 'Loic', 'Katie', 'Priyav', 'Nanette']
+
 def get_current_utc():
     """Get current time in UTC."""
     return datetime.now(timezone.utc)
@@ -92,7 +94,29 @@ def signup(name=None, weeks_ago=1):
                     ]
                 }
                 return empty_signup, 200
-    return render_template('index.html')
+    return render_template(
+        'index.html',
+        housemates=HOUSEMATES,
+        people=get_people()
+    )
+
+def get_people():
+    """People who signed up recently and should stay in the dropdown."""
+    anchor_week = get_week_start(1)
+    earliest_week = anchor_week - timedelta(weeks=4)
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT person_name FROM signups
+                WHERE week_start >= %s AND week_start <= %s
+                """,
+                (date_to_str(earliest_week), date_to_str(anchor_week))
+            )
+            names = [row['person_name'] for row in cur.fetchall()]
+
+    return sorted(names, key=lambda name: (name or '').lower())
 
 @app.route('/schedule', methods=['GET'])
 @app.route('/schedule/<int:weeks_ago>', methods=['GET'])
